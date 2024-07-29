@@ -1,0 +1,61 @@
+services:
+  postgres:
+    container_name: postgres
+    image: postgres:latest
+    secrets:
+      - db-password
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      # - POSTGRES_PASSWORD=${POSTGRES_PW}
+      - POSTGRES_PASSWORD_FILE=/run/secrets/db-password
+      - POSTGRES_DB=${POSTGRES_DB} #optional (specify default database instead of $POSTGRES_DB)
+    ports:
+      - "5432:5432"
+    restart: always
+    volumes:
+      - pgconf:/etc/postgresql
+      - pglogs:/var/log/postgresql
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - spring-postgres
+
+  pgadmin:
+    container_name: pgadmin
+    image: dpage/pgadmin4:latest
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_MAIL}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PW}
+    ports:
+      - "5050:80"
+    restart: always
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    networks:
+      - spring-postgres
+
+  
+  backend:
+    build: backend
+    ports:
+      - 8080:8080
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+    networks:
+      - spring-postgres
+    depends_on:
+      - postgres
+      - pgadmin
+    
+
+secrets:
+  db-password:
+    file: database/password.txt
+volumes:
+  pgconf:
+  pglogs:
+  pgdata:
+  pgadmin-data:
+networks:
+  spring-postgres:
+
+    
