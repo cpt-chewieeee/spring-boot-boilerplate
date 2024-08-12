@@ -1,63 +1,110 @@
 package com.bazaar.backend.controllers;
 
 import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.web.bind.annotation.*;
 
 import com.bazaar.backend.controllers.requests.LoginRequest;
 import com.bazaar.backend.controllers.requests.SignUpRequest;
-import com.bazaar.backend.controllers.responses.AuthResponse;
-import com.bazaar.backend.exceptions.DuplicatedUserInfoException;
+import com.bazaar.backend.controllers.responses.JwtResponse;
+import com.bazaar.backend.controllers.responses.MessageResponse;
+import com.bazaar.backend.models.ERole;
+import com.bazaar.backend.models.Role;
 import com.bazaar.backend.models.User;
-import com.bazaar.backend.security.WebSecurityConfig;
-import com.bazaar.backend.service.UserService;
+import com.bazaar.backend.repositories.RoleRepository;
+import com.bazaar.backend.repositories.UserRepository;
+import com.bazaar.backend.security.jwt.JwtUtils;
+import com.bazaar.backend.service.UserDetailsImpl;
 
-import java.util.Optional;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
-@RequiredArgsConstructor
+@CrossOrigin(origins = "*", maxAge = 3600)
 @RestController
-@RequestMapping("/auth")
+@RequestMapping("/api/auth")
 public class AuthController {
+    @Autowired
+    AuthenticationManager authenticationManager;
 
-    private final UserService userService;
+    @Autowired
+    UserRepository userRepository;
 
-    @PostMapping("/authenticate")
-    public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest loginRequest) {
-        Optional<User> userOptional = userService.validUsernameAndPassword(loginRequest.getUsername(), loginRequest.getPassword());
-        if (userOptional.isPresent()) {
-            User user = userOptional.get();
-            return ResponseEntity.ok(new AuthResponse(user.getId(), user.getName(), user.getRole()));
-        }
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+    @Autowired
+    RoleRepository roleRepository;
+
+    @Autowired
+    PasswordEncoder encoder;
+
+    @Autowired
+    JwtUtils jwtUtils;
+
+    @PostMapping("/signin")
+    public ResponseEntity<?> authenticateUser(@Valid @RequestBody LoginRequest loginRequest) {
+
+        Authentication authentication = authenticationManager
+                .authenticate(new UsernamePasswordAuthenticationToken(loginRequest.getUsername(), loginRequest.getPassword()));
+
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        String jwt = jwtUtils.generateJwtToken(authentication);
+
+        UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
+        List<String> roles = userDetails.getAuthorities().stream().map(item -> item.getAuthority())
+                .collect(Collectors.toList());
+
+        return ResponseEntity
+                .ok(new JwtResponse(jwt, userDetails.getId(), userDetails.getUsername(), userDetails.getEmail(), roles));
     }
 
-    @ResponseStatus(HttpStatus.CREATED)
     @PostMapping("/signup")
-    public AuthResponse signUp(@Valid @RequestBody SignUpRequest signUpRequest) {
-        if (userService.hasUserWithUsername(signUpRequest.getUsername())) {
-            throw new DuplicatedUserInfoException(String.format("Username %s is already been used", signUpRequest.getUsername()));
-        }
-        if (userService.hasUserWithEmail(signUpRequest.getEmail())) {
-            throw new DuplicatedUserInfoException(String.format("Email %s is already been used", signUpRequest.getEmail()));
+    public ResponseEntity<?> registerUser(@Valid @RequestBody SignUpRequest signUpRequest) {
+        if (userRepository.existsByUsername(signUpRequest.getUsername())) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Error: Username is already taken!"));
         }
 
-        User user = userService.saveUser(createUser(signUpRequest));
-        return new AuthResponse(user.getId(), user.getName(), user.getRole());
-    }
+        if (userRepository.existsByEmail(signUpRequest.getEmail())) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Error: Email is already in use!"));
+        }
 
-    private User createUser(SignUpRequest signUpRequest) {
-        User user = new User();
-        user.setUsername(signUpRequest.getUsername());
-        user.setPassword(signUpRequest.getPassword());
-        user.setName(signUpRequest.getName());
-        user.setEmail(signUpRequest.getEmail());
-        user.setRole(WebSecurityConfig.USER);
-        return user;
+        // Create new user's account
+        User user = new User(signUpRequest.getUsername(), signUpRequest.getEmail(),
+                encoder.encode(signUpRequest.getPassword()));
+
+        Set<String> strRoles = signUpRequest.getRole();
+        Set<Role> roles = new HashSet<>();
+
+        if (strRoles == null) {
+            Role userRole = roleRepository.findByName(ERole.ROLE_USER)
+                    .orElseThrow(() -> new RuntimeException("Error: Role is not found."));
+            roles.add(userRole);
+        } else {
+            strRoles.forEach(role -> {
+                switch (role) {
+                    case "admin":
+                        Role adminRole = roleRepository.findByName(ERole.ROLE_ADMIN)
+                                .orElseThrow(() -> new RuntimeException("Error: Role is not found."));
+                        roles.add(adminRole);
+
+                        break;
+
+                    default:
+                        Role userRole = roleRepository.findByName(ERole.ROLE_USER)
+                                .orElseThrow(() -> new RuntimeException("Error: Role is not found."));
+                        roles.add(userRole);
+                }
+            });
+        }
+
+        user.setRoles(roles);
+        userRepository.save(user);
+
+        return ResponseEntity.ok(new MessageResponse("User registered successfully!"));
     }
 }
